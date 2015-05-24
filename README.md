@@ -13,9 +13,8 @@ instances in an Amazon Web Services Auto-Scaling Group.
 
 ## Installation
 
-```
-go get github.com/askreet/howiroll
-```
+This software can be built with `gb`. Download `gb` at http://getgb.io. Once
+you have done that, you can build the software with `gb build`.
 
 ## Usage
 
