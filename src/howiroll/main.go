@@ -125,6 +125,24 @@ func removeFromELB(lbName string, instanceID string) error {
 	return err
 }
 
+func detachFromASG(asgName string, instanceID string) error {
+	d := false
+	_, err := asgClient.DetachInstances(&autoscaling.DetachInstancesInput{
+		AutoScalingGroupName:           &asgName,
+		InstanceIDs:                    []*string{&instanceID},
+		ShouldDecrementDesiredCapacity: &d,
+	})
+	return err
+}
+
+func terminateInstance(instanceID string) error {
+	_, err := ec2Client.TerminateInstances(&ec2.TerminateInstancesInput{
+		InstanceIDs: []*string{&instanceID},
+	})
+
+	return err
+}
+
 func getELBInstanceHealth(lbName string, instanceID string) string {
 	output, err := elbClient.DescribeInstanceHealth(&elb.DescribeInstanceHealthInput{
 		Instances: []*elb.Instance{
@@ -146,7 +164,10 @@ func main() {
 
 	config := config.ParseConfig()
 
-	asg, _ := amazonasg.Describe(config.ASGName)
+	asg, err := amazonasg.Describe(config.ASGName)
+	if err != nil {
+		abort(err)
+	}
 	fmt.Println("Target LaunchConfig:", asg.LaunchConfigurationName())
 
 	lbName := getELBName(asg)
@@ -157,6 +178,10 @@ func main() {
 
 	if asg.HealthCheckType() != "ELB" {
 		abort("This tool only supports ASGs that are using ELB Health Checks.")
+	}
+
+	if asg.DesiredCapacity() <= asg.MinSize() {
+		abort("This tool requires that the desired capacity of the ASG be greater than it's minimum size, in order to remove outdated instances.")
 	}
 
 	// Get all instance IDs. Identify instances that are not on latest LaunchConfiguration AMI ID.
@@ -198,18 +223,21 @@ func main() {
 	copy(knownInstanceIDs, asg.InstanceIDs())
 
 	for _, inst := range targetInstances {
-		fmt.Printf("Removing %s from the ELB.\n", inst.InstanceID())
-		removeFromELB(lbName, inst.InstanceID())
+		fmt.Printf("Detaching %s from the Auto-Scaling Group.\n", inst.InstanceID())
+		detachFromASG(config.ASGName, inst.InstanceID())
 
-		waitfor.Strings(
-			fmt.Sprintf("Waiting for %s to be marked Unhealthy in the Auto-Scaling Group.", inst.InstanceID()),
-			instanceHealthStateFunc(config.ASGName, inst.InstanceID()),
-			[]string{"Unhealthy"})
-
-		waitfor.Strings(
-			fmt.Sprintf("Waiting for %s to be terminated.", inst.InstanceID()),
-			instanceStatusFunc(inst.InstanceID()),
-			[]string{"shutting-down", "terminated", "unknown-instance"})
+		waitfor.MissingString(
+			fmt.Sprintf("Waiting for %s to be removed from the Auto-Scaling Group.", inst.InstanceID()),
+			func() []string {
+				if asg, err := amazonasg.Describe(config.ASGName); err != nil {
+					// On error, return an array containing the instance we're waiting
+					// for removal on, so that we retry.
+					return []string{inst.InstanceID()}
+				} else {
+					return asg.InstanceIDs()
+				}
+			},
+			inst.InstanceID())
 
 		newInstanceID := waitfor.AdditionalString(
 			"Waiting for a new instance to appear in the ASG.",
@@ -228,6 +256,9 @@ func main() {
 				return getELBInstanceHealth(lbName, newInstanceID)
 			},
 			[]string{"InService"})
+
+		fmt.Printf("(----) Terminating detached instance %s.\n", inst.InstanceID())
+		terminateInstance(inst.InstanceID())
 
 		// Add the new instance, so it doesn't appear to be new on the next iteration.
 		knownInstanceIDs = append(knownInstanceIDs, newInstanceID)

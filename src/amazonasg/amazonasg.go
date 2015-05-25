@@ -78,6 +78,22 @@ func (asg *AutoScalingGroup) HealthCheckType() string {
 	}
 }
 
+func (asg *AutoScalingGroup) DesiredCapacity() int64 {
+	if asg.internal.DesiredCapacity == nil {
+		return 0
+	} else {
+		return *asg.internal.DesiredCapacity
+	}
+}
+
+func (asg *AutoScalingGroup) MinSize() int64 {
+	if asg.internal.MinSize == nil {
+		return 0
+	} else {
+		return *asg.internal.MinSize
+	}
+}
+
 type Instance struct {
 	internal autoscaling.Instance
 }
